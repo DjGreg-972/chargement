@@ -5660,6 +5660,32 @@ function renderManualPlan(truckAssign, spec){
   function wouldOverlap(x, y, w, d, excludeUid){
     return placed.some(o => o.uid!==excludeUid && overlaps({x,y,w,d}, o));
   }
+  // Magnétisme : si un bord du support déplacé passe près du bord d'un voisin (moins de
+  // 15 cm d'écart, et qu'ils se recouvrent sur l'autre axe), on colle exactement contre
+  // ce voisin plutôt que de laisser le petit vide où la souris s'est arrêtée. Sans ça,
+  // "s'arrêter au contact" ne suffit pas à coller vraiment — juste à ne pas empiéter.
+  function snapToNeighbors(x, y, w, d, excludeUid){
+    const SNAP = 15;
+    let bestX = x, bestY = y, minGapX = SNAP, minGapY = SNAP;
+    placed.forEach(o => {
+      if(o.uid === excludeUid) return;
+      const yOverlap = y < o.y+o.w && o.y < y+w;
+      if(yOverlap){
+        const gapRight = o.x - (x+d);       // bord droit du support proche du bord gauche de o
+        if(gapRight >= -0.5 && gapRight < minGapX){ minGapX = gapRight; bestX = o.x - d; }
+        const gapLeft = x - (o.x+o.d);      // bord gauche du support proche du bord droit de o
+        if(gapLeft >= -0.5 && gapLeft < minGapX){ minGapX = gapLeft; bestX = o.x+o.d; }
+      }
+      const xOverlap = x < o.x+o.d && o.x < x+d;
+      if(xOverlap){
+        const gapBottom = o.y - (y+w);
+        if(gapBottom >= -0.5 && gapBottom < minGapY){ minGapY = gapBottom; bestY = o.y - w; }
+        const gapTop = y - (o.y+o.w);
+        if(gapTop >= -0.5 && gapTop < minGapY){ minGapY = gapTop; bestY = o.y+o.w; }
+      }
+    });
+    return {x:bestX, y:bestY};
+  }
   // Cherche la position valide la plus proche du point visé, par cercles concentriques
   // croissants : le support atterrit toujours au plus près de là où on clique/dépose,
   // jamais loin ni au hasard — mais jamais non plus en chevauchement avec un voisin
@@ -5735,6 +5761,9 @@ function renderManualPlan(truckAssign, spec){
             if(!wouldOverlap(targetX, p.y, p.w, p.d, p.uid)) p.x = targetX;
             if(!wouldOverlap(p.x, targetY, p.w, p.d, p.uid)) p.y = targetY;
           }
+          const snapped = snapToNeighbors(p.x, p.y, p.w, p.d, p.uid);
+          if(!wouldOverlap(snapped.x, p.y, p.w, p.d, p.uid)) p.x = snapped.x;
+          if(!wouldOverlap(p.x, snapped.y, p.w, p.d, p.uid)) p.y = snapped.y;
           el.style.left = (p.x*SCALE)+"px";
           el.style.top = (p.y*SCALE)+"px";
         }
