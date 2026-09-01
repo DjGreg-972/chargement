@@ -714,7 +714,28 @@ input[type=checkbox]:focus-visible{outline:none;box-shadow:var(--ring);}
 .map-client-row:hover, .map-client-row.hl{background:var(--kn-blue-050);}
 .map-client-row .name{font-weight:600;color:var(--n-900);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .map-client-row .city{color:var(--n-500);font-size:12px;flex-shrink:0;}
+/* Numéro d'ordre de dépose (liste + réordonnancement par glisser-déposer) */
+.map-client-row[draggable="true"]{cursor:grab;}
+.map-client-row[draggable="true"]:active{cursor:grabbing;}
+.map-client-row.dragging{opacity:.4;}
+.map-client-row.dragover{background:var(--kn-blue-050);box-shadow:inset 0 0 0 2px var(--kn-blue-light);}
+.map-row-num{
+  display:flex;align-items:center;justify-content:center;
+  width:18px;height:18px;border-radius:50%;flex-shrink:0;
+  color:#fff;font-size:10.5px;font-weight:700;line-height:1;
+}
 @media (max-width:900px){ .map-layout{grid-template-columns:1fr;} }
+
+/* Pin numéroté sur la carte — même info que .map-row-num, affichée sur le point */
+.kn-num-marker{background:transparent;border:none;}
+.kn-num-marker span{
+  display:flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border-radius:50%;
+  color:#fff;font-size:11px;font-weight:700;font-family:var(--font);
+  border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.35);
+  transition:transform .12s ease;
+}
+.kn-num-marker.hl span{transform:scale(1.3);}
 
 /* ---------- Barre d'outils & onglets ---------- */
 .toolbar{
@@ -4374,6 +4395,28 @@ function renderAllocationBoard(){
    aucun nouvel appel réseau ici, seulement leur lecture.
    ========================================================================== */
 let allocMapInstance = null;
+// Centre/zoom retenus d'un rendu à l'autre : le glisser-déposer de la liste redessine
+// la carte (numéros à jour), il ne faut pas que la vue saute/se recadre à chaque étape.
+let allocMapView = null;
+
+// Icône numérotée (ordre de dépose dans le camion) — un simple point ne suffit plus
+// dès qu'on veut lire un ordre de tournée d'un coup d'œil sur la carte.
+function numberedMarkerIcon(number, color){
+  return L.divIcon({
+    className: 'kn-num-marker',
+    html: `<span style="background:${color}">${number}</span>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -12]
+  });
+}
+function setMarkerHighlight(marker, on){
+  if(!marker) return;
+  if(marker.setStyle){ marker.setStyle({radius: on?10:7}); return; }
+  const el = marker.getElement && marker.getElement();
+  if(el) el.classList.toggle('hl', on);
+}
+
 function renderAllocationMap(){
   const app = document.getElementById('app');
   const wrap = document.createElement('div');
@@ -4391,10 +4434,14 @@ function renderAllocationMap(){
   wrap.innerHTML = `<div id="allocMap"></div><div class="map-client-list" id="mapClientList"></div>`;
   app.appendChild(wrap);
 
-  // Regroupe par camion (dans l'ordre d'affichage du tableau) puis "Non affectées"
+  // Regroupe par camion (dans l'ordre d'affichage du tableau) puis "Non affectées".
+  // L'ordre de chaque groupe suit celui de t.deliveries — c'est l'ordre dans lequel les
+  // livraisons ont été mises dans ce camion (ajout ou glisser-déposer), et c'est aussi
+  // ce qu'on affiche et qu'on modifie ici. Un filter() sur `geocoded` aurait au contraire
+  // retrouvé l'ordre global des livraisons, pas celui du camion.
   const groups = state.truckAssignments.map((t, idx) => ({
     uid: t.uid, nom: t.nom, accent: truckAccent(idx),
-    dels: geocoded.filter(d => t.deliveries.includes(d.numero))
+    dels: t.deliveries.map(n => geocoded.find(d => d.numero===n)).filter(Boolean)
   }));
   const assigned = new Set();
   state.truckAssignments.forEach(t => t.deliveries.forEach(n => assigned.add(n)));
@@ -4402,12 +4449,18 @@ function renderAllocationMap(){
   if(unassignedDels.length) groups.push({uid:"__unassigned__", nom:"Non affectées", accent:"#8C8B80", dels:unassignedDels});
 
   const listEl = document.getElementById('mapClientList');
-  listEl.innerHTML = groups.map(g => `
-    <div class="map-truck-group">
+  listEl.innerHTML = groups.map(g => {
+    const orderable = g.uid !== "__unassigned__";
+    return `
+    <div class="map-truck-group" data-uid="${esc(g.uid)}">
       <div class="map-truck-group-head"><span class="truck-dot" style="background:${g.accent};box-shadow:none;"></span>${esc(g.nom)} <span style="color:var(--n-500);font-weight:400;">(${g.dels.length})</span></div>
-      ${g.dels.map(d => `<div class="map-client-row" data-numero="${esc(d.numero)}"><span class="name">${esc(d.client||d.clientCode)}</span><span class="city">${esc(d.ville)}</span></div>`).join("")}
+      ${g.dels.map((d,i) => `<div class="map-client-row" data-numero="${esc(d.numero)}" data-uid="${esc(g.uid)}" ${orderable?'draggable="true"':''}>
+        ${orderable ? `<span class="map-row-num" style="background:${g.accent}">${i+1}</span>` : ''}
+        <span class="name">${esc(d.client||d.clientCode)}</span><span class="city">${esc(d.ville)}</span>
+      </div>`).join("")}
+      ${orderable && g.dels.length>1 ? `<div class="footnote" style="margin:4px 0 0 0;font-size:11.5px;">Glissez une ligne pour changer l'ordre de dépose de ce camion.</div>` : ''}
     </div>
-  `).join("");
+  `;}).join("");
 
   if(allocMapInstance){ allocMapInstance.remove(); allocMapInstance = null; }
   const map = L.map('allocMap', { scrollWheelZoom:true });
@@ -4426,34 +4479,89 @@ function renderAllocationMap(){
     }).addTo(map).bindPopup(`<strong>Dépôt</strong><br>${esc(state.depot.ville||"")} (${esc(state.depot.cp)})`);
   }
   groups.forEach(g => {
-    g.dels.forEach(d => {
+    const orderable = g.uid !== "__unassigned__";
+    g.dels.forEach((d,i) => {
       points.push([d.lat, d.lon]);
-      const marker = L.circleMarker([d.lat, d.lon], {
-        radius:7, color:"#fff", weight:2, fillColor:g.accent, fillOpacity:.95
-      }).addTo(map).bindPopup(
+      const marker = orderable
+        ? L.marker([d.lat, d.lon], { icon: numberedMarkerIcon(i+1, g.accent) }).addTo(map)
+        : L.circleMarker([d.lat, d.lon], { radius:7, color:"#fff", weight:2, fillColor:g.accent, fillOpacity:.95 }).addTo(map);
+      marker.bindPopup(
         `<strong>${esc(d.client||d.clientCode)}</strong><br>${esc(d.ville)} (${esc(d.cp)}) — ${d.poids.toFixed(0)} kg<br>` +
-        `<span style="color:${g.accent};font-weight:600;">${esc(g.nom)}</span>` +
+        `<span style="color:${g.accent};font-weight:600;">${esc(g.nom)}${orderable?` — arrêt n°${i+1}`:''}</span>` +
         (d.distanceKm!=null ? `<br><span style="color:#8C8B80;">${Math.round(d.distanceKm)} km du dépôt</span>` : "")
       );
       markerByNumero[d.numero] = marker;
     });
   });
 
-  if(points.length===1){ map.setView(points[0], 11); }
+  if(allocMapView){ map.setView(allocMapView.center, allocMapView.zoom); }
+  else if(points.length===1){ map.setView(points[0], 11); }
   else { map.fitBounds(points, { padding:[30,30] }); }
+  map.on('moveend', () => { allocMapView = { center: map.getCenter(), zoom: map.getZoom() }; });
 
   listEl.querySelectorAll('.map-client-row').forEach(row => {
     const numero = row.dataset.numero;
     const marker = markerByNumero[numero];
     if(!marker) return;
-    row.addEventListener('mouseenter', () => { row.classList.add('hl'); marker.setStyle({radius:10}); });
-    row.addEventListener('mouseleave', () => { row.classList.remove('hl'); marker.setStyle({radius:7}); });
+    row.addEventListener('mouseenter', () => { row.classList.add('hl'); setMarkerHighlight(marker, true); });
+    row.addEventListener('mouseleave', () => { row.classList.remove('hl'); setMarkerHighlight(marker, false); });
     row.addEventListener('click', () => { map.panTo(marker.getLatLng()); marker.openPopup(); });
   });
+
+  setupMapReorderDragDrop(listEl);
 
   // Le conteneur venant d'être inséré dans le DOM, Leaflet doit recalculer sa taille
   // une fois le layout stabilisé (sinon les tuiles ne couvrent qu'un coin du div).
   setTimeout(() => map.invalidateSize(), 50);
+}
+
+// Glisser-déposer pour réordonner les livraisons À L'INTÉRIEUR d'un même camion (l'ordre
+// de dépose affiché par les numéros). On ne gère pas ici le déplacement vers un autre
+// camion — ça reste le rôle de la vue "Répartition" et de son propre glisser-déposer.
+function setupMapReorderDragDrop(listEl){
+  let draggedNumero = null;
+  let draggedUid = null;
+  listEl.querySelectorAll('.map-client-row[draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      draggedNumero = row.dataset.numero;
+      draggedUid = row.dataset.uid;
+      row.classList.add('dragging');
+      if(e.dataTransfer){
+        e.dataTransfer.effectAllowed = 'move';
+        try{ e.dataTransfer.setData('text/plain', draggedNumero); }catch(err){}
+      }
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      listEl.querySelectorAll('.map-client-row.dragover').forEach(r => r.classList.remove('dragover'));
+      draggedNumero = null; draggedUid = null;
+    });
+    row.addEventListener('dragover', e => {
+      if(!draggedNumero || row.dataset.uid !== draggedUid || row.dataset.numero === draggedNumero) return;
+      e.preventDefault();
+      if(e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      row.classList.add('dragover');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+    row.addEventListener('drop', e => {
+      row.classList.remove('dragover');
+      const targetNumero = row.dataset.numero;
+      const uid = row.dataset.uid;
+      if(!draggedNumero || uid !== draggedUid || targetNumero === draggedNumero) return;
+      e.preventDefault();
+      const t = state.truckAssignments.find(t => t.uid===uid);
+      if(!t) return;
+      const from = t.deliveries.indexOf(draggedNumero);
+      const to = t.deliveries.indexOf(targetNumero);
+      if(from===-1 || to===-1) return;
+      t.deliveries.splice(from, 1);
+      // Après avoir retiré l'élément déplacé, l'index courant de la cible est déjà
+      // le bon point d'insertion : on dépose juste avant elle.
+      t.deliveries.splice(t.deliveries.indexOf(targetNumero), 0, draggedNumero);
+      draggedNumero = null; draggedUid = null;
+      renderAllocationMap();
+    });
+  });
 }
 
 // Barre d'affectation ancrée en bas de la fenêtre. Elle vit hors du plateau : elle doit
